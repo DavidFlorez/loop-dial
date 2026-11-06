@@ -1,0 +1,30 @@
+{
+  "timestamp_utc": "2026-11-06T18:06:09.042389+00:00",
+  "backend": "vllm",
+  "problems_json": "data/aime_2024_2025.json",
+  "n_problems": 60,
+  "max_new_tokens": 32768,
+  "forced_max_tokens": 512,
+  "max_num_seqs": 16,
+  "max_model_len": null,
+  "sampling": {
+    "enable_thinking": true,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "seed": 0
+  },
+  "runs": [
+    {
+      "condition": "loop_n2",
+      "backend": "vllm",
+      "max_num_seqs": 16,
+      "max_model_len": 36864,
+      "pass1_wall_s": 2159.13,
+      "pass2_wall_s": 42.15,
+      "total_wall_s": 2201.29
+    }
+  ]
+}

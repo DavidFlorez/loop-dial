@@ -1,0 +1,32 @@
+[
+  {
+    "condition": "loop_n2",
+    "succeeded": true,
+    "config": "max_num_seqs=16,max_model_len=default(36864)",
+    "supervisor_wall_s": 2498.14
+  },
+  {
+    "condition": "qwen35_9b",
+    "succeeded": true,
+    "config": "max_num_seqs=16,max_model_len=default(36864)",
+    "supervisor_wall_s": 2142.78
+  },
+  {
+    "condition": "loop_n4",
+    "succeeded": true,
+    "config": "max_num_seqs=16,max_model_len=default(36864)",
+    "supervisor_wall_s": 6345.1
+  },
+  {
+    "condition": "loop_n3",
+    "succeeded": true,
+    "config": "max_num_seqs=16,max_model_len=default(36864)",
+    "supervisor_wall_s": 3585.46
+  },
+  {
+    "condition": "loop_n1",
+    "succeeded": true,
+    "config": "max_num_seqs=16,max_model_len=default(36864)",
+    "supervisor_wall_s": 2445.9
+  }
+]

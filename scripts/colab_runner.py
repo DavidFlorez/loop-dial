@@ -90,20 +90,27 @@ def run_colab_cmd(
     return res
 
 
-def build_upload_tarball(tar_path: Path) -> None:
-    """Bundle `src/`, `scripts/`, `data/subset_200.json`, `pyproject.toml`, and local `results/*.json*` checkpoints."""
+def build_upload_tarball(tar_path: Path, *, include_root_results: bool = False) -> None:
+    """Bundle `src/`, `scripts/`, `data/*.json`, `pyproject.toml`, and `results/aime/*.json*` checkpoints."""
     include_paths = [
         REPO_ROOT / "pyproject.toml",
         REPO_ROOT / "requirements.txt",
         REPO_ROOT / "src",
         REPO_ROOT / "scripts",
         REPO_ROOT / "data" / "subset_200.json",
+        REPO_ROOT / "data" / "aime_2024_2025.json",
     ]
-    results_dir = REPO_ROOT / "results"
-    if results_dir.is_dir():
-        for res_file in sorted(results_dir.iterdir()):
+    aime_res_dir = REPO_ROOT / "results" / "aime"
+    if aime_res_dir.is_dir():
+        for res_file in sorted(aime_res_dir.iterdir()):
             if res_file.is_file() and res_file.suffix in {".json", ".jsonl", ".csv"}:
                 include_paths.append(res_file)
+    if include_root_results:
+        results_dir = REPO_ROOT / "results"
+        if results_dir.is_dir():
+            for res_file in sorted(results_dir.iterdir()):
+                if res_file.is_file() and res_file.suffix in {".json", ".jsonl", ".csv"}:
+                    include_paths.append(res_file)
     with tarfile.open(tar_path, "w:gz") as tf:
         for item in include_paths:
             if item.exists():
@@ -159,7 +166,7 @@ def exec_inline_python(
 def sync_repo_to_session(session: str) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         tar_local = Path(tmpdir) / "loop_dial_bundle.tar.gz"
-        build_upload_tarball(tar_local)
+        build_upload_tarball(tar_local, include_root_results=False)
         run_colab_cmd(["upload", "-s", session, str(tar_local), "/content/loop_dial_bundle.tar.gz"], proc_timeout=180.0)
 
     unpack_code = """
@@ -172,17 +179,19 @@ print("Unpacked bundle to /content/loop-dial:", sorted(os.listdir("/content/loop
     exec_inline_python(session, unpack_code, timeout=45.0)
 
 
-def download_results_from_session(session: str) -> None:
-    pack_code = """
+def download_results_from_session(session: str, subdir: str = "") -> None:
+    rel_dir = f"results/{subdir}".strip("/") if subdir else "results"
+    pack_code = f"""
 import os, tarfile
-res_dir = "/content/loop-dial/results"
+res_dir = "/content/loop-dial/{rel_dir}"
 os.makedirs(res_dir, exist_ok=True)
 out_tar = "/content/loop_dial_results.tar.gz"
 with tarfile.open(out_tar, "w:gz") as tf:
     for fn in sorted(os.listdir(res_dir)):
-        if fn.endswith((".json", ".jsonl", ".csv")) and not fn.endswith(".done.json"):
-            tf.add(os.path.join(res_dir, fn), arcname=os.path.join("results", fn))
-print("Packed remote results:", os.path.getsize(out_tar), "bytes")
+        full = os.path.join(res_dir, fn)
+        if os.path.isfile(full) and fn.endswith((".json", ".jsonl", ".csv")) and not fn.endswith(".done.json"):
+            tf.add(full, arcname=os.path.join("{rel_dir}", fn))
+print("Packed remote {rel_dir}:", os.path.getsize(out_tar), "bytes")
 """
     exec_inline_python(session, pack_code, timeout=60.0)
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -192,7 +201,7 @@ print("Packed remote results:", os.path.getsize(out_tar), "bytes")
             proc_timeout=240.0,
         )
         names = safe_extract_results_tar(local_tar, REPO_ROOT)
-        print(f"[colab_runner] Safely extracted {len(names)} entries into {REPO_ROOT / 'results'}")
+        print(f"[colab_runner] Safely extracted {len(names)} entries into {REPO_ROOT / rel_dir}")
 
 
 def main() -> None:
@@ -206,8 +215,9 @@ def main() -> None:
     p_sync = sub.add_parser("sync", help="Re-upload local src/scripts/data bundle to active session")
     p_sync.add_argument("--session", default="loop-dial-gpu")
 
-    p_pull = sub.add_parser("pull", help="Download /content/loop-dial/results into local results/")
+    p_pull = sub.add_parser("pull", help="Download /content/loop-dial/results[/subdir] into local results/")
     p_pull.add_argument("--session", default="loop-dial-gpu")
+    p_pull.add_argument("--subdir", default="", help="Optional subdirectory under results/ (e.g. 'aime')")
 
     p_exec = sub.add_parser("exec", help="Execute a Python file on the active session")
     p_exec.add_argument("--session", default="loop-dial-gpu")
@@ -227,7 +237,7 @@ def main() -> None:
     elif args.action == "sync":
         sync_repo_to_session(args.session)
     elif args.action == "pull":
-        download_results_from_session(args.session)
+        download_results_from_session(args.session, subdir=args.subdir)
     elif args.action == "exec":
         run_colab_cmd(
             ["exec", "-s", args.session, "--timeout", str(args.timeout), "-f", args.file],

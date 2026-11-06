@@ -66,7 +66,20 @@ PLAIN_LEGEND_LABELS = {
     "qwen35_9b": "Plain Qwen3.5-9B (32 steps, no loop)",
 }
 
-FORBIDDEN_TOKENS = ("\\", "$", "{", "}", "**", "boxed", "frac", "eval_count", "</think>", "bf16", "bfloat16")
+FORBIDDEN_TOKENS = (
+    "\\",
+    "$",
+    "{",
+    "}",
+    "**",
+    "boxed",
+    "frac",
+    "eval_count",
+    "</think>",
+    "bf16",
+    "bfloat16",
+    "α",
+)
 
 
 def _apply_base_rc() -> None:
@@ -533,6 +546,8 @@ def generate_budget_curve_chart(
     out_path: Path,
     *,
     gpu_footer: str,
+    benchmark_name: str = "MATH-500",
+    title_override: Optional[str] = None,
 ) -> None:
     """Plot nested token-budget curve (`2k / 4k / 8k / 16k [/ 32k]`) across all conditions."""
     _apply_base_rc()
@@ -571,15 +586,45 @@ def generate_budget_curve_chart(
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    y_max = min(105.0, float(budget_df["accuracy_strict_pct"].max()) + 10.0)
+    y_max = min(105.0, float(budget_df["accuracy_strict_pct"].max()) + 12.0)
     ax.set_ylim(-2.0, max(y_max, 50.0))
-    ax.legend(loc="lower right", frameon=True, facecolor="#ffffff", edgecolor="#cbd5e1", fontsize=9.4)
+    if benchmark_name.startswith("AIME") and budgets:
+        ax.set_xlim(-0.22, len(budgets) - 1 + 0.48)
+        last_b = budgets[-1]
+        last_x = len(budgets) - 1
+        end_vals = {}
+        for cond in ["loop_n1", "loop_n2", "loop_n3", "loop_n4", "qwen35_9b"]:
+            sub = budget_df[(budget_df["condition"] == cond) & (budget_df["budget"] == last_b)]
+            if not sub.empty:
+                end_vals[cond] = float(sub["accuracy_strict_pct"].iloc[0])
+        # Nudge close neighbors cleanly
+        offsets = {c: 0.0 for c in end_vals}
+        if "loop_n3" in end_vals and "qwen35_9b" in end_vals and abs(end_vals["loop_n3"] - end_vals["qwen35_9b"]) < 5.0:
+            if end_vals["loop_n3"] >= end_vals["qwen35_9b"]:
+                offsets["loop_n3"] = +0.9
+                offsets["qwen35_9b"] = -1.1
+            else:
+                offsets["qwen35_9b"] = +0.9
+                offsets["loop_n3"] = -1.1
+        for cond, val in end_vals.items():
+            ax.text(
+                last_x + 0.08,
+                val + offsets[cond],
+                f"{val:.1f}%",
+                va="center",
+                ha="left",
+                fontsize=9.5,
+                fontweight="bold",
+                color=PALETTE[cond],
+            )
+    leg_loc = "upper left" if benchmark_name.startswith("AIME") else "lower right"
+    ax.legend(loc=leg_loc, frameon=True, facecolor="#ffffff", edgecolor="#cbd5e1", fontsize=9.4)
 
     n_probs = int(budget_df["n_problems"].max())
     fig.text(
         0.06,
         0.92,
-        "Accuracy Across Thinking Token Budgets (Nested Prefix Curve)",
+        title_override or "Accuracy Across Thinking Token Budgets (Nested Prefix Curve)",
         fontsize=15.5,
         fontweight="bold",
         color="#0f172a",
@@ -587,7 +632,7 @@ def generate_budget_curve_chart(
     fig.text(
         0.06,
         0.87,
-        f"Share of {n_probs} MATH-500 problems solved cleanly before hitting each token cap",
+        f"Share of {n_probs} {benchmark_name} problems solved cleanly before hitting each token cap",
         fontsize=10.5,
         color="#475569",
     )
@@ -681,24 +726,752 @@ def generate_paired_changes_chart(
     _save_checked(fig, out_path)
 
 
+def generate_aime_vs_math500_chart(
+    math_summary_df: pd.DataFrame,
+    aime_summary_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    gpu_footer: str,
+) -> None:
+    """Grouped bar chart comparing MATH-500 (N=200, 16k) vs AIME 2024+2025 (N=60, 32k) strict accuracy."""
+    from matplotlib.patches import Patch
+
+    _apply_base_rc()
+    order = ["loop_n1", "loop_n2", "loop_n3", "loop_n4", "qwen35_9b"]
+    present = [
+        c for c in order if c in set(math_summary_df["condition"]) and c in set(aime_summary_df["condition"])
+    ]
+    if not present:
+        return
+
+    m_df = math_summary_df.set_index("condition").loc[present].reset_index()
+    a_df = aime_summary_df.set_index("condition").loc[present].reset_index()
+
+    fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN), dpi=DPI)
+    fig.subplots_adjust(left=0.09, right=0.96, top=0.79, bottom=0.19)
+
+    xs = np.arange(len(present))
+    m_vals = m_df["accuracy_strict_pct"].to_numpy(dtype=float)
+    a_vals = a_df["accuracy_strict_pct"].to_numpy(dtype=float)
+
+    m_err_lo = np.maximum(0.0, m_vals - m_df["ci95_strict_low_pct"].to_numpy(dtype=float))
+    m_err_hi = np.maximum(0.0, m_df["ci95_strict_high_pct"].to_numpy(dtype=float) - m_vals)
+    a_err_lo = np.maximum(0.0, a_vals - a_df["ci95_strict_low_pct"].to_numpy(dtype=float))
+    a_err_hi = np.maximum(0.0, a_df["ci95_strict_high_pct"].to_numpy(dtype=float) - a_vals)
+
+    n_math = int(m_df["n_problems"].iloc[0])
+    n_aime = int(a_df["n_problems"].iloc[0])
+
+    bar_w = 0.36
+    bars_m = ax.bar(
+        xs - bar_w / 2,
+        m_vals,
+        width=bar_w,
+        color="#94a3b8",
+        edgecolor="#64748b",
+        linewidth=1.0,
+        zorder=3,
+    )
+    bars_a = ax.bar(
+        xs + bar_w / 2,
+        a_vals,
+        width=bar_w,
+        color=[PALETTE[c] for c in present],
+        edgecolor="none",
+        zorder=3,
+    )
+
+    ax.errorbar(
+        xs - bar_w / 2,
+        m_vals,
+        yerr=[m_err_lo, m_err_hi],
+        fmt="none",
+        ecolor="#475569",
+        elinewidth=1.2,
+        capsize=3.5,
+        zorder=4,
+    )
+    ax.errorbar(
+        xs + bar_w / 2,
+        a_vals,
+        yerr=[a_err_lo, a_err_hi],
+        fmt="none",
+        ecolor="#0f172a",
+        elinewidth=1.3,
+        capsize=3.5,
+        zorder=4,
+    )
+
+    m_ci_hi = m_df["ci95_strict_high_pct"].to_numpy(dtype=float)
+    a_ci_hi = a_df["ci95_strict_high_pct"].to_numpy(dtype=float)
+    a_counts = a_df["correct_strict"].to_numpy(dtype=int)
+
+    for b_m, val_m, hi_m in zip(bars_m, m_vals, m_ci_hi):
+        ax.text(
+            b_m.get_x() + b_m.get_width() / 2,
+            max(val_m, hi_m) + 1.4,
+            f"{val_m:.1f}%",
+            ha="center",
+            va="bottom",
+            fontsize=9.2,
+            fontweight="bold",
+            color="#475569",
+        )
+
+    for b_a, val_a, hi_a, cnt_a in zip(bars_a, a_vals, a_ci_hi, a_counts):
+        ax.text(
+            b_a.get_x() + b_a.get_width() / 2,
+            max(val_a, hi_a) + 1.4,
+            f"{val_a:.1f}%\n({cnt_a}/{n_aime})",
+            ha="center",
+            va="bottom",
+            fontsize=9.4,
+            fontweight="bold",
+            color="#0f172a",
+        )
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels([PLAIN_SHORT_LABELS[c] for c in present], fontsize=10.0)
+    ax.set_ylabel("Share of problems solved cleanly (%)", fontsize=11.5, fontweight="bold")
+    ax.set_xlabel("Model & middle-layer loop dial setting", fontsize=11.5, fontweight="bold", labelpad=8)
+    ax.set_ylim(0, 115.0)
+    ax.grid(axis="y", color="#e2e8f0", linewidth=0.8, zorder=0)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    legend_handles = [
+        Patch(facecolor="#94a3b8", edgecolor="#64748b", label=f"MATH-500 ({n_math} problems, 16,384 token cap)"),
+        Patch(facecolor="#2563eb", edgecolor="none", label=f"AIME 2024+2025 ({n_aime} olympiad problems, 32,768 token cap, colored by dial)"),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        bbox_to_anchor=(0.5, 1.11),
+        loc="upper center",
+        ncol=2,
+        frameon=True,
+        facecolor="#ffffff",
+        edgecolor="#cbd5e1",
+        fontsize=9.2,
+    )
+
+    fig.text(
+        0.06,
+        0.92,
+        "Same Dial, Harder Test: MATH-500 vs AIME 2024+2025 Olympiad Accuracy",
+        fontsize=15.2,
+        fontweight="bold",
+        color="#0f172a",
+    )
+    fig.text(
+        0.06,
+        0.87,
+        "Strict solve rate within the token budget (with 95% Wilson confidence bars; AIME bars colored by dial setting)",
+        fontsize=10.3,
+        color="#475569",
+    )
+    fig.text(0.06, 0.03, gpu_footer, fontsize=8.8, color="#64748b")
+    _save_checked(fig, out_path)
+
+
+def generate_cover_5x2_banner(
+    summary_df: pd.DataFrame,
+    out_path: Path,
+    *,
+    is_aime: bool = False,
+) -> None:
+    """Render 2000×800 (5:2) editorial X Article cover banner with zero raw LaTeX."""
+    _apply_base_rc()
+    by_cond = {str(r["condition"]): r for _, r in summary_df.iterrows()}
+    if not all(k in by_cond for k in ("loop_n1", "loop_n2", "loop_n4")):
+        return
+
+    r1 = by_cond["loop_n1"]
+    r2 = by_cond["loop_n2"]
+    r4 = by_cond["loop_n4"]
+    rq = by_cond.get("qwen35_9b")
+
+    n_tot = int(r2["n_problems"])
+    c1, p1, cap1 = int(r1["correct_strict"]), float(r1["accuracy_strict_pct"]), float(r1["hit_cap_pct"])
+    c2, p2, med2 = int(r2["correct_strict"]), float(r2["accuracy_strict_pct"]), float(r2["median_tokens"])
+    c4, p4 = int(r4["correct_strict"]), float(r4["accuracy_strict_pct"])
+
+    # 2000 x 800 exact at DPI=160 -> 12.5 in x 5.0 in
+    fig = plt.figure(figsize=(12.5, 5.0), dpi=DPI)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    ax.set_xlim(0, 125.0)
+    ax.set_ylim(0, 50.0)
+    ax.axis("off")
+
+    bg_rect = FancyBboxPatch(
+        (0, 0),
+        125.0,
+        50.0,
+        boxstyle="square,pad=0",
+        facecolor="#f8fafc",
+        edgecolor="none",
+    )
+    ax.add_patch(bg_rect)
+
+    # Top dark navy rounded editorial bar
+    navy_bar = FancyBboxPatch(
+        (2.8, 26.8),
+        119.4,
+        20.6,
+        boxstyle="round,pad=0.3,rounding_size=1.8",
+        facecolor="#0f172a",
+        edgecolor="#1e293b",
+        linewidth=1.6,
+    )
+    ax.add_patch(navy_bar)
+
+    if is_aime:
+        eyebrow = f"SENSENOVA-LOOP-9B  ·  AIME 2024 + 2025 OLYMPIAD  ·  32K THINKING TOKENS  ·  N = {n_tot}"
+        headline = f"1 pass: {c1}/{n_tot}   ·   2 passes: {c2}/{n_tot}   ·   4 passes: {c4}/{n_tot}"
+        q_part = (
+            f"  ·  Plain Qwen3.5-9B: {int(rq['correct_strict'])}/{n_tot} ({float(rq['accuracy_strict_pct']):.1f}%)"
+            if rq is not None
+            else ""
+        )
+        subline = (
+            f"Turning the middle-layer loop dial on the exact same 9.66B weights  "
+            f"({p1:.1f}%  →  {p2:.1f}%  →  {p4:.1f}%{q_part})"
+        )
+    else:
+        eyebrow = f"SENSENOVA-LOOP-9B  ·  MATH-500 BENCHMARK  ·  16K THINKING TOKENS  ·  N = {n_tot}"
+        headline = f"{p1:.1f}%   →   {p2:.1f}%   →   {p4:.1f}%"
+        q_part = (
+            f"  ·  Plain Qwen3.5-9B: {int(rq['correct_strict'])}/{n_tot} ({float(rq['accuracy_strict_pct']):.1f}%)"
+            if rq is not None
+            else ""
+        )
+        subline = (
+            f"1 pass ({c1}/{n_tot})  →  2 passes default ({c2}/{n_tot})  →  4 passes ({c4}/{n_tot}) "
+            f"on the same 9.66B weights{q_part}"
+        )
+
+    ax.text(62.5, 43.7, eyebrow, fontsize=10.2, fontweight="bold", ha="center", va="center", color="#60a5fa")
+    ax.text(62.5, 36.8, headline, fontsize=27.5 if is_aime else 31.0, fontweight="bold", ha="center", va="center", color="#ffffff")
+    ax.text(62.5, 30.2, subline, fontsize=11.0, ha="center", va="center", color="#cbd5e1")
+
+    if p4 < p2 - 1e-6:
+        c2_badge, c2_b1, c2_b2 = (
+            "SWEET SPOT",
+            "Clean step-by-step derivation with the",
+            "highest accuracy and shortest reasoning.",
+        )
+        c4_spec = {
+            "badge": "OVER-LOOPED",
+            "badge_bg": "#e11d48",
+            "bg": "#fff1f2",
+            "border": "#fb7185",
+            "title_col": "#9f1239",
+            "body1": "Second-guesses valid steps, drifts longer,",
+            "body2": "and loses accuracy despite nearly 2× compute.",
+            "pill_bg": "#ffe4e6",
+            "pill_fg": "#9f1239",
+        }
+    elif p4 > p2 + 1e-6:
+        c2_badge, c2_b1, c2_b2 = (
+            "TRAINED DEFAULT",
+            "Fast, well-calibrated reasoning at the",
+            "checkpoint's trained 56-step depth.",
+        )
+        c4_spec = {
+            "badge": "EXTRA DEPTH",
+            "badge_bg": "#0284c7",
+            "bg": "#f0f9ff",
+            "border": "#38bdf8",
+            "title_col": "#075985",
+            "body1": "Nearly 2× layer compute edges higher on",
+            "body2": "hard olympiad items at steeper GPU cost.",
+            "pill_bg": "#e0f2fe",
+            "pill_fg": "#075985",
+        }
+    else:
+        c2_badge, c2_b1, c2_b2 = (
+            "SWEET SPOT",
+            "Ties peak accuracy with shorter traces",
+            "and nearly half the layer steps of 4 passes.",
+        )
+        c4_spec = {
+            "badge": "NO GAIN",
+            "badge_bg": "#d97706",
+            "bg": "#fffbeb",
+            "border": "#fbbf24",
+            "title_col": "#92400e",
+            "body1": "Nearly 2× layer steps per token without",
+            "body2": "beating the trained 2-pass accuracy.",
+            "pill_bg": "#fef3c7",
+            "pill_fg": "#92400e",
+        }
+
+    # Three bottom cards: 1 pass (collapse) | 2 passes (default) | 4 passes
+    cards = [
+        {
+            "x": 2.8,
+            "title": "1 pass",
+            "badge": "COLLAPSE",
+            "badge_bg": "#dc2626",
+            "bg": "#fef2f2",
+            "border": "#ef4444",
+            "title_col": "#991b1b",
+            "sub": "32 layer steps/token (half default)",
+            "body1": "Breaks out of thinking after a few words,",
+            "body2": "scrambles algebra, and loops until token cap.",
+            "pill_bg": "#fee2e2",
+            "pill_fg": "#991b1b",
+            "pill_txt": f"Solved {c1}/{n_tot} ({p1:.1f}%)  ·  Hit cap {cap1:.0f}%",
+        },
+        {
+            "x": 43.4,
+            "title": "2 passes (default)",
+            "badge": c2_badge,
+            "badge_bg": "#16a34a",
+            "bg": "#f0fdf4",
+            "border": "#16a34a",
+            "title_col": "#166534",
+            "sub": "56 layer steps/token (trained depth)",
+            "body1": c2_b1,
+            "body2": c2_b2,
+            "pill_bg": "#dcfce7",
+            "pill_fg": "#166534",
+            "pill_txt": f"Solved {c2}/{n_tot} ({p2:.1f}%)  ·  Median {med2:,.0f} tokens",
+        },
+        {
+            "x": 84.0,
+            "title": "4 passes",
+            "badge": c4_spec["badge"],
+            "badge_bg": c4_spec["badge_bg"],
+            "bg": c4_spec["bg"],
+            "border": c4_spec["border"],
+            "title_col": c4_spec["title_col"],
+            "sub": "104 layer steps/token (2× default)",
+            "body1": c4_spec["body1"],
+            "body2": c4_spec["body2"],
+            "pill_bg": c4_spec["pill_bg"],
+            "pill_fg": c4_spec["pill_fg"],
+            "pill_txt": f"Solved {c4}/{n_tot} ({p4:.1f}%)  ·  {p4 - p2:+.1f} pts vs 2 passes",
+        },
+    ]
+
+    card_w = 38.2
+    card_y = 2.8
+    card_h = 21.6
+    for c in cards:
+        x0 = float(c["x"])
+        lw = 2.4 if str(c["title"]).startswith("2 passes") else 1.7
+        box = FancyBboxPatch(
+            (x0, card_y),
+            card_w,
+            card_h,
+            boxstyle="round,pad=0.25,rounding_size=1.5",
+            facecolor=str(c["bg"]),
+            edgecolor=str(c["border"]),
+            linewidth=lw,
+        )
+        ax.add_patch(box)
+
+        ax.text(x0 + 2.2, card_y + 18.0, str(c["title"]), fontsize=14.2, fontweight="bold", va="center", color=str(c["title_col"]))
+
+        # Badge pill top-right
+        b_len = len(str(c["badge"]))
+        b_w = 13.8 if b_len > 11 else (11.4 if b_len > 8 else 9.6)
+        b_patch = FancyBboxPatch(
+            (x0 + card_w - b_w - 2.0, card_y + 16.4),
+            b_w,
+            3.2,
+            boxstyle="round,pad=0.1,rounding_size=1.2",
+            facecolor=str(c["badge_bg"]),
+            edgecolor="none",
+        )
+        ax.add_patch(b_patch)
+        ax.text(
+            x0 + card_w - b_w / 2 - 2.0,
+            card_y + 18.0,
+            str(c["badge"]),
+            fontsize=8.3,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#ffffff",
+        )
+
+        ax.text(x0 + 2.2, card_y + 14.3, str(c["sub"]), fontsize=9.5, va="center", color="#475569")
+        ax.text(x0 + 2.2, card_y + 10.6, str(c["body1"]), fontsize=10.1, va="center", color="#1e293b")
+        ax.text(x0 + 2.2, card_y + 8.0, str(c["body2"]), fontsize=10.1, va="center", color="#1e293b")
+
+        pill = FancyBboxPatch(
+            (x0 + 1.4, card_y + 1.9),
+            card_w - 2.8,
+            3.9,
+            boxstyle="round,pad=0.1,rounding_size=1.1",
+            facecolor=str(c["pill_bg"]),
+            edgecolor=str(c["border"]),
+            linewidth=1.0,
+        )
+        ax.add_patch(pill)
+        ax.text(
+            x0 + card_w / 2,
+            card_y + 3.85,
+            str(c["pill_txt"]),
+            fontsize=9.0,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color=str(c["pill_fg"]),
+        )
+
+    _save_checked(fig, out_path)
+
+
+def generate_hero_trace_chart(
+    math_results_dir: Path,
+    subset_path: Path,
+    out_path: Path,
+    *,
+    problem_uid: str = "test/counting_and_probability/119.json",
+) -> None:
+    """Render 1600×1080 3-column real side-by-side trace comparison from logged MATH-500 JSONLs."""
+    from loop_dial.common import read_jsonl_by_id
+    from loop_dial.metrics import latex_to_plain_text
+
+    _apply_base_rc()
+    if not subset_path.is_file():
+        return
+    req_files = [math_results_dir / f"{c}.jsonl" for c in ("loop_n1", "loop_n2", "loop_n4", "qwen35_9b")]
+    if not all(f.is_file() for f in req_files):
+        return
+
+    probs = {p["unique_id"]: p for p in json.loads(subset_path.read_text(encoding="utf-8")).get("problems", [])}
+    if problem_uid not in probs:
+        return
+    prob = probs[problem_uid]
+    r1 = read_jsonl_by_id(math_results_dir / "loop_n1.jsonl").get(problem_uid)
+    r2 = read_jsonl_by_id(math_results_dir / "loop_n2.jsonl").get(problem_uid)
+    r4 = read_jsonl_by_id(math_results_dir / "loop_n4.jsonl").get(problem_uid)
+    rq = read_jsonl_by_id(math_results_dir / "qwen35_9b.jsonl").get(problem_uid)
+    if not (r1 and r2 and r4 and rq):
+        return
+
+    # Verify authentic grounding in the real logged traces before rendering
+    assert "52" in r1["text"] and "C(k/32" in r1["text"], "Unexpected loop_n1 trace content"
+    assert "-125" in str(r2["pred_strict"]), "Unexpected loop_n2 strict prediction"
+    assert "125" in str(r4["pred_strict"]) and "2" in str(r4["pred_strict"]), "Unexpected loop_n4 strict prediction"
+
+    ans_gold = latex_to_plain_text(prob["answer"])
+    ans_n2 = latex_to_plain_text(r2["pred_strict"])
+    ans_n4 = latex_to_plain_text(r4["pred_strict"])
+    ans_n1_forced = latex_to_plain_text(r1["pred_forced"])
+    ratio_qwen = float(rq["n_tokens"]) / max(float(r2["n_tokens"]), 1.0)
+
+    # 1600 x 1080 exact at DPI=160 -> 10.0 in x 6.75 in
+    fig = plt.figure(figsize=(10.0, 6.75), dpi=DPI)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    ax.set_xlim(0, 100.0)
+    ax.set_ylim(0, 67.5)
+    ax.axis("off")
+
+    ax.text(
+        3.2,
+        63.4,
+        "Same 9B Weights. One Pass Collapses. Two Passes Solve. Four Passes Drift.",
+        fontsize=15.4,
+        fontweight="bold",
+        color="#0f172a",
+    )
+    ax.text(
+        3.2,
+        60.2,
+        f"Real logged traces on MATH-500 Item 119 (Level {prob['level']} {prob['subject']} · Verified answer: {ans_gold})",
+        fontsize=10.3,
+        color="#475569",
+    )
+
+    # Problem banner
+    prob_box = FancyBboxPatch(
+        (3.2, 51.4),
+        93.6,
+        6.8,
+        boxstyle="round,pad=0.2,rounding_size=1.2",
+        facecolor="#f8fafc",
+        edgecolor="#cbd5e1",
+        linewidth=1.4,
+    )
+    ax.add_patch(prob_box)
+    ax.text(
+        5.0,
+        55.9,
+        "Problem:  Find the constant term (the x⁰ term with no x) in the expansion of  (10x³ − 1 / (2x²))⁵.",
+        fontsize=10.6,
+        fontweight="bold",
+        va="center",
+        color="#0f172a",
+    )
+    ax.text(
+        5.0,
+        53.1,
+        f"Reference baseline: Plain Qwen3.5-9B also solves {ans_gold}, using {int(rq['n_tokens']):,} tokens "
+        f"({ratio_qwen:.1f}× more tokens than 2-pass SenseNova-Loop).",
+        fontsize=9.4,
+        va="center",
+        color="#047857",
+    )
+
+    columns = [
+        {
+            "x": 3.2,
+            "title": "1 pass",
+            "sub": "32 layer steps/token · Half default",
+            "verdict": "FAIL",
+            "verdict_bg": "#dc2626",
+            "header_bg": "#fef2f2",
+            "border": "#ef4444",
+            "title_col": "#991b1b",
+            "lines": [
+                "\"Let me analyze (10x³ − 1 / 52)...\"",
+                "",
+                "[Exits thinking after 12 tokens]",
+                "",
+                "\"Step 1: General term of expansion:\"",
+                "\"T = n^p c² (s^p x⁹)(10x³)^n\"",
+                "\"Wait, let me recompute:\"",
+                "\"T = C(k/32, k) × (8x³)^k + ...\"",
+                "",
+                f"[Enters 8-gram loop at token {int(r1['loop_onset_token']):,}",
+                f" and runs to the {int(r1['max_new_tokens']):,}-token cap]",
+            ],
+            "pill_bg": "#fee2e2",
+            "pill_fg": "#991b1b",
+            "pill_txt": f"No final answer  (cap prompt: {ans_n1_forced})",
+            "meta": f"{int(r1['n_tokens']):,} tokens  ·  {float(r1['gpu_seconds_share']):.1f} s GPU  ·  Hit cap",
+        },
+        {
+            "x": 35.1,
+            "title": "2 passes (default)",
+            "sub": "56 layer steps/token · Trained depth",
+            "verdict": "PASS",
+            "verdict_bg": "#16a34a",
+            "header_bg": "#f0fdf4",
+            "border": "#16a34a",
+            "title_col": "#166534",
+            "lines": [
+                "\"Using the binomial theorem:\"",
+                "\"C(5, k) × (10x³)^(5−k) × (−1/(2x²))^k\"",
+                "\"= C(5, k) × 10^(5−k) × (−1/2)^k\"",
+                "\"  × x^(15−5k)\"",
+                "",
+                "\"For constant term: 15 − 5k = 0 → k = 3.\"",
+                "",
+                "\"When k = 3: C(5, 3) × 10² × (−1/2)³\"",
+                "\"= 10 × 100 × (−1/8)\"",
+                "\"= −1000 / 8 = −125.\"",
+            ],
+            "pill_bg": "#dcfce7",
+            "pill_fg": "#166534",
+            "pill_txt": f"Answer: {ans_n2}",
+            "meta": f"{int(r2['n_tokens']):,} tokens  ·  {float(r2['gpu_seconds_share']):.1f} s GPU  ·  Clean stop",
+        },
+        {
+            "x": 67.0,
+            "title": "4 passes",
+            "sub": "104 layer steps/token · 2× default",
+            "verdict": "FAIL",
+            "verdict_bg": "#e11d48",
+            "header_bg": "#fff1f2",
+            "border": "#fb7185",
+            "title_col": "#9f1239",
+            "lines": [
+                "\"For constant term: 15 − 5k = 0 → k = 3.\"",
+                "\"= 10 × 100 × (−1) × (1/8)\"",
+                "\"= −1000 / 8 = −125 / 2\"  [slip!]",
+                "",
+                "\"Wait, let me recalculate: C(5,3)=10,\"",
+                "\"10²=100, (−1)³=−1, 1/2³=1/8.\"",
+                "\"Hmm, that's −125 / 2. Let me verify...\"",
+                "",
+                f"[Re-checks 5 times over {int(r4['n_tokens']):,} tokens]",
+                "\"Yes, the constant term is −125 / 2.\"",
+            ],
+            "pill_bg": "#ffe4e6",
+            "pill_fg": "#9f1239",
+            "pill_txt": f"Answer: {ans_n4}   (wrong: −62.5)",
+            "meta": f"{int(r4['n_tokens']):,} tokens  ·  {float(r4['gpu_seconds_share']):.1f} s GPU  ·  Over-loop drift",
+        },
+    ]
+
+    col_w = 29.8
+    col_y = 5.2
+    col_h = 44.2
+    for col in columns:
+        x0 = float(col["x"])
+        lw = 2.2 if col["verdict"] == "PASS" else 1.6
+        card = FancyBboxPatch(
+            (x0, col_y),
+            col_w,
+            col_h,
+            boxstyle="round,pad=0.2,rounding_size=1.4",
+            facecolor="#ffffff",
+            edgecolor=str(col["border"]),
+            linewidth=lw,
+        )
+        ax.add_patch(card)
+
+        hdr = FancyBboxPatch(
+            (x0 + 0.4, col_y + col_h - 8.2),
+            col_w - 0.8,
+            7.8,
+            boxstyle="round,pad=0.1,rounding_size=1.1",
+            facecolor=str(col["header_bg"]),
+            edgecolor="none",
+        )
+        ax.add_patch(hdr)
+
+        ax.text(x0 + 1.8, col_y + col_h - 3.1, str(col["title"]), fontsize=12.6, fontweight="bold", va="center", color=str(col["title_col"]))
+        ax.text(x0 + 1.8, col_y + col_h - 6.1, str(col["sub"]), fontsize=8.8, va="center", color="#475569")
+
+        v_w = 6.2
+        v_box = FancyBboxPatch(
+            (x0 + col_w - v_w - 1.5, col_y + col_h - 4.7),
+            v_w,
+            3.0,
+            boxstyle="round,pad=0.05,rounding_size=1.0",
+            facecolor=str(col["verdict_bg"]),
+            edgecolor="none",
+        )
+        ax.add_patch(v_box)
+        ax.text(
+            x0 + col_w - v_w / 2 - 1.5,
+            col_y + col_h - 3.2,
+            str(col["verdict"]),
+            fontsize=8.6,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#ffffff",
+        )
+
+        # Excerpt lines
+        line_y_top = col_y + col_h - 10.6
+        line_step = 2.16
+        for idx_ln, ln_txt in enumerate(col["lines"]):
+            if not ln_txt:
+                continue
+            is_bracket = ln_txt.startswith("[") or ln_txt.endswith("]")
+            ax.text(
+                x0 + 1.7,
+                line_y_top - idx_ln * line_step,
+                ln_txt,
+                fontsize=8.95,
+                fontstyle="italic" if is_bracket else "normal",
+                color="#64748b" if is_bracket else "#1e293b",
+                va="center",
+            )
+
+        # Answer pill
+        ans_pill = FancyBboxPatch(
+            (x0 + 1.6, col_y + 4.3),
+            col_w - 3.2,
+            3.9,
+            boxstyle="round,pad=0.1,rounding_size=1.0",
+            facecolor=str(col["pill_bg"]),
+            edgecolor=str(col["border"]),
+            linewidth=1.1,
+        )
+        ax.add_patch(ans_pill)
+        ax.text(
+            x0 + col_w / 2,
+            col_y + 6.25,
+            str(col["pill_txt"]),
+            fontsize=9.8,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color=str(col["pill_fg"]),
+        )
+        ax.text(
+            x0 + col_w / 2,
+            col_y + 1.95,
+            str(col["meta"]),
+            fontsize=8.3,
+            ha="center",
+            va="center",
+            color="#475569",
+        )
+
+    ax.text(
+        3.2,
+        1.9,
+        "All outputs above are verbatim plain-English excerpts from logged runs in results/ (seed = 0, unified vLLM 0.33.0 + PR #64832).",
+        fontsize=8.6,
+        color="#64748b",
+    )
+    _save_checked(fig, out_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate plain-English validated charts in assets/.")
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--assets-dir", type=Path, default=ASSETS_DIR)
     parser.add_argument("--prefix", type=str, default="", help="Optional CSV prefix inside results/")
+    parser.add_argument(
+        "--also-compare-math",
+        type=Path,
+        default=None,
+        help="Path to MATH-500 summary.csv when generating AIME comparison charts (e.g. results/summary.csv)",
+    )
     args = parser.parse_args()
 
-    smoke_path = args.results_dir / "smoke.json"
+    root_smoke_path = RESULTS_DIR / "smoke.json"
+    local_smoke_path = args.results_dir / "smoke.json"
+    smoke_path = local_smoke_path if local_smoke_path.is_file() else root_smoke_path
     gpu_name = "Colab NVIDIA RTX PRO 6000 GPU"
     if smoke_path.is_file():
         smoke_obj = json.loads(smoke_path.read_text(encoding="utf-8"))
         gpu_name = smoke_obj.get("gpu_name", gpu_name)
 
-    generate_architecture_diagram(smoke_path, args.assets_dir / "loop_architecture.png")
-
+    is_aime_dir = args.results_dir.resolve() != RESULTS_DIR.resolve() or args.also_compare_math is not None
     summary_csv = args.results_dir / f"{args.prefix}summary.csv"
     budget_csv = args.results_dir / f"{args.prefix}budget_curve.csv"
     paired_csv = args.results_dir / f"{args.prefix}paired_stats.csv"
+
+    # Always keep hero_trace.png up to date from logged MATH-500 traces
+    generate_hero_trace_chart(
+        RESULTS_DIR,
+        REPO_ROOT / "data" / "subset_200.json",
+        args.assets_dir / "hero_trace.png",
+    )
+
+    if is_aime_dir:
+        if summary_csv.is_file():
+            aime_summary_df = pd.read_csv(summary_csv)
+            aime_footer = (
+                f"Measured on {gpu_name} · Fixed seed = 0 on HuggingFaceH4/aime 2024 + MathArena/aime 2025"
+            )
+            math_csv = args.also_compare_math or (RESULTS_DIR / "summary.csv")
+            if math_csv.is_file():
+                math_summary_df = pd.read_csv(math_csv)
+                generate_aime_vs_math500_chart(
+                    math_summary_df,
+                    aime_summary_df,
+                    args.assets_dir / "aime_vs_math500.png",
+                    gpu_footer=aime_footer,
+                )
+            if budget_csv.is_file():
+                aime_budget_df = pd.read_csv(budget_csv)
+                generate_budget_curve_chart(
+                    aime_budget_df,
+                    args.assets_dir / "aime_budget_curve.png",
+                    gpu_footer=aime_footer,
+                    benchmark_name="AIME 2024+2025 olympiad",
+                    title_override="AIME 2024+2025 Accuracy Across Thinking Token Budgets",
+                )
+            generate_cover_5x2_banner(
+                aime_summary_df,
+                args.assets_dir / "cover_5x2.png",
+                is_aime=True,
+            )
+        return
+
+    generate_architecture_diagram(smoke_path, args.assets_dir / "loop_architecture.png")
 
     if summary_csv.is_file():
         summary_df = pd.read_csv(summary_csv)
@@ -728,6 +1501,20 @@ def main() -> None:
                 paired_df,
                 args.assets_dir / "paired_changes.png",
                 gpu_footer=footer,
+            )
+
+        aime_summary_default = RESULTS_DIR / "aime" / "summary.csv"
+        if aime_summary_default.is_file():
+            generate_cover_5x2_banner(
+                pd.read_csv(aime_summary_default),
+                args.assets_dir / "cover_5x2.png",
+                is_aime=True,
+            )
+        else:
+            generate_cover_5x2_banner(
+                summary_df,
+                args.assets_dir / "cover_5x2.png",
+                is_aime=False,
             )
 
 

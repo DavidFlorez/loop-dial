@@ -320,7 +320,21 @@ def record_gif(out_path: Path, chrome_bin: str = CHROME_DEFAULT) -> None:
         time.sleep(1.0)
         cdp.eval_js(f"({set_left_slider_js})(2)")
         time.sleep(0.8)
-        snap(2300)
+        snap(2100)
+
+        # Frame 7: Switch Benchmark Dataset selector to AIME 2024+2025 (60 olympiad problems · 32k token cap)
+        cdp.eval_js(
+            """
+            (() => {
+              const labels = Array.from(document.querySelectorAll('label'));
+              const target = labels.find(el => el.textContent && el.textContent.includes('AIME 2024+2025'));
+              if (target) target.click();
+              return Boolean(target);
+            })()
+            """
+        )
+        time.sleep(1.1)
+        snap(2400)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         quantized = [im.quantize(colors=256, method=Image.Quantize.MEDIANCUT) for im, _ in frames_and_durations]

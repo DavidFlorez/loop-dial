@@ -1,0 +1,15 @@
+comparison,description,metric,reference_condition,comparison_condition,n_paired,ref_correct,ref_accuracy_pct,ref_ci95_low_pct,ref_ci95_high_pct,cmp_correct,cmp_accuracy_pct,cmp_ci95_low_pct,cmp_ci95_high_pct,diff_cmp_minus_ref_pp,both_correct,gained_by_cmp,lost_by_cmp,both_wrong,discordant,mcnemar_p_value,significant_0_05
+loop_n1_vs_loop_n2,Turning dial down: 1 pass vs 2 passes (default),strict,loop_n2,loop_n1,60,44,73.33,60.99,82.87,0,0.0,0.0,6.02,-73.33,0,0,44,16,44,1.13687e-13,True
+loop_n1_vs_loop_n2,Turning dial down: 1 pass vs 2 passes (default),forced,loop_n2,loop_n1,60,46,76.67,64.56,85.56,0,0.0,0.0,6.02,-76.67,0,0,46,14,46,2.84217e-14,True
+loop_n3_vs_loop_n2,Turning dial up: 3 passes vs 2 passes (default),strict,loop_n2,loop_n3,60,44,73.33,60.99,82.87,40,66.67,54.06,77.27,-6.67,34,6,10,10,16,0.454498,False
+loop_n3_vs_loop_n2,Turning dial up: 3 passes vs 2 passes (default),forced,loop_n2,loop_n3,60,46,76.67,64.56,85.56,47,78.33,66.38,86.88,1.67,41,6,5,8,11,1.0,False
+loop_n4_vs_loop_n2,Turning dial up: 4 passes vs 2 passes (default),strict,loop_n2,loop_n4,60,44,73.33,60.99,82.87,23,38.33,27.09,50.98,-35.0,21,2,23,14,25,1.94311e-05,True
+loop_n4_vs_loop_n2,Turning dial up: 4 passes vs 2 passes (default),forced,loop_n2,loop_n4,60,46,76.67,64.56,85.56,32,53.33,40.89,65.37,-23.33,29,3,17,11,20,0.00257683,True
+loop_n2_vs_qwen35_9b,Default Loop (2 passes) vs plain Qwen3.5-9B,strict,qwen35_9b,loop_n2,60,38,63.33,50.68,74.38,44,73.33,60.99,82.87,10.0,32,12,6,10,18,0.237885,False
+loop_n2_vs_qwen35_9b,Default Loop (2 passes) vs plain Qwen3.5-9B,forced,qwen35_9b,loop_n2,60,46,76.67,64.56,85.56,46,76.67,64.56,85.56,0.0,40,6,6,8,12,1.0,False
+loop_n1_vs_qwen35_9b,1-pass Loop vs plain Qwen3.5-9B,strict,qwen35_9b,loop_n1,60,38,63.33,50.68,74.38,0,0.0,0.0,6.02,-63.33,0,0,38,22,38,7.27596e-12,True
+loop_n1_vs_qwen35_9b,1-pass Loop vs plain Qwen3.5-9B,forced,qwen35_9b,loop_n1,60,46,76.67,64.56,85.56,0,0.0,0.0,6.02,-76.67,0,0,46,14,46,2.84217e-14,True
+loop_n3_vs_qwen35_9b,3-pass Loop vs plain Qwen3.5-9B,strict,qwen35_9b,loop_n3,60,38,63.33,50.68,74.38,40,66.67,54.06,77.27,3.33,33,7,5,15,12,0.774414,False
+loop_n3_vs_qwen35_9b,3-pass Loop vs plain Qwen3.5-9B,forced,qwen35_9b,loop_n3,60,46,76.67,64.56,85.56,47,78.33,66.38,86.88,1.67,41,6,5,8,11,1.0,False
+loop_n4_vs_qwen35_9b,4-pass Loop vs plain Qwen3.5-9B,strict,qwen35_9b,loop_n4,60,38,63.33,50.68,74.38,23,38.33,27.09,50.98,-25.0,20,3,18,19,21,0.00148964,True
+loop_n4_vs_qwen35_9b,4-pass Loop vs plain Qwen3.5-9B,forced,qwen35_9b,loop_n4,60,46,76.67,64.56,85.56,32,53.33,40.89,65.37,-23.33,29,3,17,11,20,0.00257683,True

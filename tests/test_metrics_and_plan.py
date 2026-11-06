@@ -110,3 +110,59 @@ def test_coherence_inspector() -> None:
     assert info["coherent"] is True
     assert info["closed_think"] is True
     assert info["has_strict_boxed"] is True
+
+
+def test_aime_2024_2025_frozen_subset_and_grading() -> None:
+    from loop_dial.common import DATA_DIR, load_subset_from_disk
+    from loop_dial.metrics import format_math_prose_plain
+
+    aime_path = DATA_DIR / "aime_2024_2025.json"
+    assert aime_path.is_file(), "Run scripts/prepare_aime.py first to build data/aime_2024_2025.json"
+
+    probs = load_subset_from_disk(n=60, subset_path=aime_path)
+    assert len(probs) == 60
+    assert sum(1 for p in probs if p["year"] == 2024) == 30
+    assert sum(1 for p in probs if p["year"] == 2025) == 30
+    assert [p["idx"] for p in probs] == list(range(60))
+
+    # Verify known AIME answers grade cleanly across string/int/zero-padded representations
+    first_24 = probs[0]
+    first_25 = probs[30]
+    assert grade_math_answer(first_24["answer"], first_24["answer"])
+    assert grade_math_answer(first_24["answer_aime3"], first_24["answer"])
+    assert grade_math_answer(first_25["answer_aime3"], first_25["answer"])
+    assert grade_math_answer("070", "70")
+    assert grade_math_answer("70", "70")
+    assert not grade_math_answer("71", "70")
+
+    for p in probs:
+        clean_prob = format_math_prose_plain(p["problem"])
+        assert clean_prob
+        for forbidden in ("\\", "$", "{", "}"):
+            assert forbidden not in clean_prob, f"Raw markup leaked in {p['unique_id']}: {clean_prob}"
+
+
+def test_colab_notebook_vllm_setup_and_aime_cells() -> None:
+    import json
+    from loop_dial.common import REPO_ROOT
+
+    nb_path = REPO_ROOT / "notebooks" / "loop_dial_colab.ipynb"
+    assert nb_path.is_file()
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    by_id = {c["id"]: "".join(c["source"]) for c in nb["cells"]}
+
+    assert "vllm-setup-code" in by_id
+    assert "RUN_VLLM_SETUP = False" in by_id["vllm-setup-code"]
+    assert '"scripts/probe_vllm.py", "--setup-only"' in by_id["vllm-setup-code"]
+
+    assert "sweep-code" in by_id
+    assert "RUN_PHASE_B_LIVE = False" in by_id["sweep-code"]
+    assert "vllm_py = ensure_vllm_python()" in by_id["sweep-code"]
+
+    assert "aime-live-code" in by_id
+    assert "RUN_AIME_LIVE = False" in by_id["aime-live-code"]
+    assert "vllm_py = ensure_vllm_python()" in by_id["aime-live-code"]
+    assert '"--max-new-tokens", "32768"' in by_id["aime-live-code"]
+    assert '"--out-dir", "results/aime"' in by_id["aime-live-code"]
+
+

@@ -448,6 +448,7 @@ def run_condition_vllm(
     seed: int,
     gpu_memory_utilization: float = 0.90,
     max_num_seqs: int = 64,
+    max_model_len: Optional[int] = None,
     force_intermediate_budgets: bool = True,
 ) -> Dict[str, Any]:
     """Run resumable continuous-batched vLLM generation with Pass-2 forced answers across all budgets."""
@@ -470,11 +471,14 @@ def run_condition_vllm(
         return {"condition": condition, "backend": "vllm", "skipped_all_existing": True}
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    resolved_max_model_len = (
+        int(max_model_len) if max_model_len is not None else min(40960, int(max_new_tokens) + 4096)
+    )
     llm_kwargs: Dict[str, Any] = {
         "model": model_id,
         "dtype": "bfloat16",
         "trust_remote_code": True,
-        "max_model_len": min(40960, int(max_new_tokens) + 4096),
+        "max_model_len": resolved_max_model_len,
         "gpu_memory_utilization": float(gpu_memory_utilization),
         "max_num_seqs": int(max_num_seqs),
     }
@@ -576,7 +580,7 @@ def run_condition_vllm(
     total_toks = max(1, sum(len(r["trimmed_ids"]) for r in parsed_rows))
 
     out_records: List[Dict[str, Any]] = []
-    for r in parsed_rows:
+    for fallback_idx, r in enumerate(parsed_rows):
         prob = r["prob"]
         gold = prob["answer"]
         trimmed_ids = r["trimmed_ids"]
@@ -614,39 +618,42 @@ def run_condition_vllm(
                 budgets_dict[b_key]["correct_forced"] = grade_math_answer(pf, gold)
 
         gpu_share_s = total_wall_s * (len(trimmed_ids) / total_toks)
-        out_records.append(
-            {
-                "condition": condition,
-                "model_id": model_id,
-                "n_passes": n_passes,
-                "backend": "vllm",
-                "presence_penalty_impl": "vllm_sampling_params",
-                "seed": seed,
-                "unique_id": prob["unique_id"],
-                "idx": prob["idx"],
-                "subject": prob["subject"],
-                "level": prob["level"],
-                "gold_answer": gold,
-                "max_new_tokens": max_new_tokens,
-                "n_tokens": len(trimmed_ids),
-                "hit_eos": r["hit_eos"],
-                "hit_cap": r["hit_cap"],
-                "pred_strict": pred_strict,
-                "pred_forced": pred_forced,
-                "correct_strict": correct_strict,
-                "correct_forced": correct_forced,
-                "rep_8gram_ratio": round(repeated_8gram_ratio(clean_text), 4),
-                "tail_rep_8gram_ratio": round(tail_repeated_8gram_ratio(clean_text), 4),
-                "loop_onset_token": compute_loop_onset_from_token_ids(trimmed_ids),
-                "row_finish_wall_s": round(r["row_finish_s"], 3),
-                "gpu_seconds_share": round(gpu_share_s, 3),
-                "batch_size": len(todo),
-                "batch_wall_s": round(total_wall_s, 3),
-                "budgets": budgets_dict,
-                "forced_continuation": forced_cont_full,
-                "text": clean_text,
-            }
-        )
+        rec_obj: Dict[str, Any] = {
+            "condition": condition,
+            "model_id": model_id,
+            "n_passes": n_passes,
+            "backend": "vllm",
+            "presence_penalty_impl": "vllm_sampling_params",
+            "seed": seed,
+            "unique_id": prob["unique_id"],
+            "idx": prob.get("idx", fallback_idx),
+            "subject": prob.get("subject", "Math"),
+            "level": prob.get("level"),
+            "gold_answer": gold,
+            "max_new_tokens": max_new_tokens,
+            "n_tokens": len(trimmed_ids),
+            "hit_eos": r["hit_eos"],
+            "hit_cap": r["hit_cap"],
+            "pred_strict": pred_strict,
+            "pred_forced": pred_forced,
+            "correct_strict": correct_strict,
+            "correct_forced": correct_forced,
+            "rep_8gram_ratio": round(repeated_8gram_ratio(clean_text), 4),
+            "tail_rep_8gram_ratio": round(tail_repeated_8gram_ratio(clean_text), 4),
+            "loop_onset_token": compute_loop_onset_from_token_ids(trimmed_ids),
+            "row_finish_wall_s": round(r["row_finish_s"], 3),
+            "gpu_seconds_share": round(gpu_share_s, 3),
+            "batch_size": len(todo),
+            "batch_wall_s": round(total_wall_s, 3),
+            "budgets": budgets_dict,
+            "forced_continuation": forced_cont_full,
+            "text": clean_text,
+        }
+        if "year" in prob:
+            rec_obj["year"] = prob["year"]
+        if "source" in prob:
+            rec_obj["source"] = prob["source"]
+        out_records.append(rec_obj)
 
     append_jsonl(out_jsonl, out_records)
     print(
@@ -661,6 +668,8 @@ def run_condition_vllm(
     return {
         "condition": condition,
         "backend": "vllm",
+        "max_num_seqs": int(max_num_seqs),
+        "max_model_len": resolved_max_model_len,
         "pass1_wall_s": round(pass1_wall_s, 2),
         "pass2_wall_s": round(pass2_wall_s, 2),
         "total_wall_s": round(total_wall_s, 2),
@@ -682,7 +691,7 @@ def resolve_condition_spec(cond_name: str) -> Tuple[str, str, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Phase B MATH-500 sweep for loop-dial.")
+    parser = argparse.ArgumentParser(description="Run MATH-500 or AIME sweep for loop-dial.")
     parser.add_argument(
         "--conditions",
         type=str,
@@ -691,10 +700,23 @@ def main() -> None:
         help="Conditions to evaluate",
     )
     parser.add_argument("--backend", choices=("hf", "vllm"), default="hf")
-    parser.add_argument("--n-problems", type=int, default=50, help="Number of subset_200 problems to run")
+    parser.add_argument(
+        "--problems-json",
+        type=Path,
+        default=None,
+        help="Path to frozen problem subset JSON (default: data/subset_200.json; e.g. data/aime_2024_2025.json)",
+    )
+    parser.add_argument("--n-problems", type=int, default=50, help="Number of subset problems to run")
     parser.add_argument("--max-new-tokens", type=int, default=16384, help="Pass-1 token budget")
     parser.add_argument("--forced-max-tokens", type=int, default=512, help="Pass-2 forced answer cap")
     parser.add_argument("--batch-size", type=int, default=10, help="Batch size for --backend hf")
+    parser.add_argument("--max-num-seqs", type=int, default=64, help="Max concurrent sequences for --backend vllm")
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="Optional explicit max_model_len for --backend vllm (default: min(40960, max_new_tokens + 4096))",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Sampling RNG seed")
     parser.add_argument("--out-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument(
@@ -732,11 +754,17 @@ def main() -> None:
                 str(args.max_new_tokens),
                 "--forced-max-tokens",
                 str(args.forced_max_tokens),
+                "--max-num-seqs",
+                str(args.max_num_seqs),
                 "--seed",
                 str(args.seed),
                 "--out-dir",
                 str(args.out_dir),
             ]
+            if args.problems_json is not None:
+                child_cmd.extend(["--problems-json", str(args.problems_json)])
+            if args.max_model_len is not None:
+                child_cmd.extend(["--max-model-len", str(args.max_model_len)])
             if args.file_suffix:
                 child_cmd.extend(["--file-suffix", args.file_suffix])
             if args.force_intermediate_budgets:
@@ -753,9 +781,12 @@ def main() -> None:
             {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "backend": "vllm",
+                "problems_json": str(args.problems_json) if args.problems_json else "data/subset_200.json",
                 "n_problems": args.n_problems,
                 "max_new_tokens": args.max_new_tokens,
                 "forced_max_tokens": args.forced_max_tokens,
+                "max_num_seqs": args.max_num_seqs,
+                "max_model_len": args.max_model_len,
                 "sampling": DEFAULT_SAMPLING,
                 "runs": run_meta_rows,
             },
@@ -763,7 +794,7 @@ def main() -> None:
         print(f"Saved combined vLLM sweep manifest to {manifest_path}")
         return
 
-    problems = load_subset_from_disk(n=args.n_problems)
+    problems = load_subset_from_disk(n=args.n_problems, subset_path=args.problems_json)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     run_meta_rows = []
 
@@ -793,6 +824,8 @@ def main() -> None:
                 max_new_tokens=args.max_new_tokens,
                 forced_max_tokens=args.forced_max_tokens,
                 seed=args.seed,
+                max_num_seqs=args.max_num_seqs,
+                max_model_len=args.max_model_len,
                 force_intermediate_budgets=args.force_intermediate_budgets,
             )
         run_meta_rows.append(meta)
@@ -804,9 +837,12 @@ def main() -> None:
         {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "backend": args.backend,
+            "problems_json": str(args.problems_json) if args.problems_json else "data/subset_200.json",
             "n_problems": args.n_problems,
             "max_new_tokens": args.max_new_tokens,
             "forced_max_tokens": args.forced_max_tokens,
+            "max_num_seqs": args.max_num_seqs,
+            "max_model_len": args.max_model_len,
             "sampling": DEFAULT_SAMPLING,
             "runs": run_meta_rows,
         },

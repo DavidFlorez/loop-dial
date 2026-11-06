@@ -33,12 +33,21 @@ def run_cmd(cmd: list[str], *, cwd: Path | None = None, timeout: int = 900) -> s
     return subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, text=True, capture_output=True, timeout=timeout)
 
 
-def ensure_vllm_venv() -> Path:
+def ensure_vllm_venv(*, reuse_existing: bool = False) -> Path:
     import shutil
+
+    if shutil.which("uv") is None:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
+
+    vpy = VLLM_VENV / "bin" / "python"
+    if reuse_existing and vpy.is_file():
+        chk = run_cmd([str(vpy), "-c", "import vllm; print(vllm.__version__)"])
+        if chk.returncode == 0 and "0.33.0" in (chk.stdout or ""):
+            run_cmd(["uv", "pip", "install", "--python", str(vpy), "--no-deps", "-e", str(REPO_ROOT)])
+            return vpy
 
     if VLLM_VENV.exists():
         shutil.rmtree(VLLM_VENV, ignore_errors=True)
-    vpy = VLLM_VENV / "bin" / "python"
     res = run_cmd(["uv", "venv", str(VLLM_VENV), "--python", "3.12"])
     if res.returncode != 0:
         res = run_cmd(["uv", "venv", str(VLLM_VENV)])
@@ -64,6 +73,96 @@ def ensure_vllm_venv() -> Path:
         raise RuntimeError(f"vllm==0.33.0 install failed:\n{res.stderr[-2000:]}")
     run_cmd(["uv", "pip", "install", "--python", str(vpy), "--no-deps", "-e", str(REPO_ROOT)])
     return vpy
+
+
+def apply_pr_64832_patch_only(vpy: Path) -> Dict[str, Any]:
+    """Idempotently apply vllm-project/vllm#64832 code hunks onto `/content/vllm-venv`."""
+    loc = run_cmd([str(vpy), "-c", "import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent.parent)"])
+    if loc.returncode != 0:
+        raise RuntimeError(f"Could not locate vllm site-packages: {loc.stderr}")
+    site_pkg = Path(loc.stdout.strip().splitlines()[-1])
+    loop_model_file = site_pkg / "vllm" / "model_executor" / "models" / "sensenova_loop.py"
+    if loop_model_file.is_file():
+        return {
+            "pr_url": "https://github.com/vllm-project/vllm/pull/64832",
+            "applied": True,
+            "already_patched": True,
+        }
+
+    diff_path = Path("/tmp/vllm_pr_64832.diff")
+    with urllib.request.urlopen(PR_64832_DIFF_URL, timeout=30) as resp:
+        diff_bytes = resp.read()
+    diff_path.write_bytes(diff_bytes)
+
+    raw_diff = diff_bytes.decode("utf-8", errors="replace")
+    filtered_chunks: list[str] = []
+    for chunk in raw_diff.split("diff --git "):
+        if not chunk.strip():
+            continue
+        first_line = chunk.splitlines()[0]
+        if first_line.startswith("a/vllm/"):
+            filtered_chunks.append("diff --git " + chunk)
+    vllm_only_diff = Path("/tmp/vllm_pr_64832_code_only.diff")
+    vllm_only_diff.write_text("".join(filtered_chunks), encoding="utf-8")
+
+    dry = run_cmd(["patch", "--dry-run", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
+    result: Dict[str, Any] = {
+        "pr_url": "https://github.com/vllm-project/vllm/pull/64832",
+        "dry_run_rc": dry.returncode,
+        "dry_run_stdout": dry.stdout[-1500:],
+        "dry_run_stderr": dry.stderr[-1000:],
+    }
+    if dry.returncode != 0:
+        dry_fuzz = run_cmd(["patch", "--dry-run", "--fuzz=3", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
+        result["dry_run_fuzz3_rc"] = dry_fuzz.returncode
+        result["dry_run_fuzz3_stdout"] = dry_fuzz.stdout[-1500:]
+        if dry_fuzz.returncode != 0:
+            result["applied"] = False
+            return result
+        apply_res = run_cmd(["patch", "--fuzz=3", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
+    else:
+        apply_res = run_cmd(["patch", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
+
+    result["applied"] = apply_res.returncode == 0
+    if not result["applied"]:
+        result["apply_stderr"] = apply_res.stderr[-1000:]
+    return result
+
+
+def verify_registry_and_hf_overrides(vpy: Path) -> Dict[str, Any]:
+    """Verify SenseNovaLoop registration and hf_overrides loop_settings execution plans in vLLM."""
+    snippet = r"""
+import json, torch, transformers, vllm
+from vllm.model_executor.models.registry import ModelRegistry
+from vllm.transformers_utils.config import get_config
+
+archs = ModelRegistry.get_supported_archs()
+in_registry = "SenseNovaLoopForConditionalGeneration" in archs
+
+plan_lens = {}
+for n in (1, 2, 3, 4):
+    cfg = get_config("sensenova/SenseNova-Loop-9B-Preview", trust_remote_code=True)
+    tcfg = getattr(cfg, "text_config", cfg)
+    tcfg.loop_settings = {"start": 4, "end": 28, "eval_count": n, "counts": [n]}
+    start, end = tcfg.loop_settings["start"], tcfg.loop_settings["end"]
+    plan_lens[str(n)] = start + (end - start) * int(tcfg.loop_settings["eval_count"]) + (tcfg.num_hidden_layers - end)
+
+print("VERIFY_JSON:" + json.dumps({
+    "vllm_version": vllm.__version__,
+    "torch_version": torch.__version__,
+    "transformers_version": transformers.__version__,
+    "in_registry": in_registry,
+    "plan_lens": plan_lens,
+}))
+"""
+    res = run_cmd([str(vpy), "-c", snippet], timeout=180)
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("VERIFY_JSON:"):
+            info = json.loads(line[len("VERIFY_JSON:") :])
+            if not info.get("in_registry"):
+                raise RuntimeError(f"SenseNovaLoopForConditionalGeneration missing from vLLM registry: {info}")
+            return info
+    raise RuntimeError(f"Registry verification failed:\nstdout={res.stdout[-1000:]}\nstderr={res.stderr[-1000:]}")
 
 
 def test_stock_vllm_loop(vpy: Path) -> Dict[str, Any]:
@@ -229,57 +328,40 @@ print("QWEN_VLLM_OUT:" + json.dumps(out))
 
 
 def apply_pr_64832_and_test(vpy: Path) -> Dict[str, Any]:
-    # Locate site-packages/vllm inside VLLM_VENV
-    loc = run_cmd([str(vpy), "-c", "import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent.parent)"])
-    site_pkg = Path(loc.stdout.strip().splitlines()[-1])
-
-    diff_path = Path("/tmp/vllm_pr_64832.diff")
-    with urllib.request.urlopen(PR_64832_DIFF_URL, timeout=30) as resp:
-        diff_bytes = resp.read()
-    diff_path.write_bytes(diff_bytes)
-
-    # Filter diff to only `vllm/` files (docs/tests aren't shipped in PyPI wheel)
-    raw_diff = diff_bytes.decode("utf-8", errors="replace")
-    filtered_chunks: list[str] = []
-    for chunk in raw_diff.split("diff --git "):
-        if not chunk.strip():
-            continue
-        first_line = chunk.splitlines()[0]
-        if first_line.startswith("a/vllm/"):
-            filtered_chunks.append("diff --git " + chunk)
-    vllm_only_diff = Path("/tmp/vllm_pr_64832_code_only.diff")
-    vllm_only_diff.write_text("".join(filtered_chunks), encoding="utf-8")
-
-    dry = run_cmd(["patch", "--dry-run", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
-    result: Dict[str, Any] = {
-        "pr_url": "https://github.com/vllm-project/vllm/pull/64832",
-        "dry_run_rc": dry.returncode,
-        "dry_run_stdout": dry.stdout[-1500:],
-        "dry_run_stderr": dry.stderr[-1000:],
-    }
-    if dry.returncode != 0:
-        dry_fuzz = run_cmd(["patch", "--dry-run", "--fuzz=3", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
-        result["dry_run_fuzz3_rc"] = dry_fuzz.returncode
-        result["dry_run_fuzz3_stdout"] = dry_fuzz.stdout[-1500:]
-        if dry_fuzz.returncode != 0:
-            result["applied"] = False
-            return result
-        apply_res = run_cmd(["patch", "--fuzz=3", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
-    else:
-        apply_res = run_cmd(["patch", "-p1", "-i", str(vllm_only_diff)], cwd=site_pkg)
-
-    result["applied"] = apply_res.returncode == 0
-    if not result["applied"]:
-        result["apply_stderr"] = apply_res.stderr[-1000:]
+    result = apply_pr_64832_patch_only(vpy)
+    if not result.get("applied"):
         return result
-
     result.update(verify_passes_in_vllm(vpy))
     return result
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Setup or benchmark vLLM==0.33.0 + SenseNova-Loop PR #64832.")
+    parser.add_argument(
+        "--setup-only",
+        action="store_true",
+        help="Idempotently install/reuse /content/vllm-venv + apply PR #64832 + verify registry without full probe.",
+    )
+    args = parser.parse_args()
+
+    if args.setup_only:
+        vpy = ensure_vllm_venv(reuse_existing=True)
+        patch_res = apply_pr_64832_patch_only(vpy)
+        if not patch_res.get("applied"):
+            raise RuntimeError(f"Failed to apply PR #64832 patch: {patch_res}")
+        ver = verify_registry_and_hf_overrides(vpy)
+        print(
+            f"[vLLM Setup OK] {vpy} | vllm=={ver['vllm_version']}, torch=={ver['torch_version']}, "
+            f"transformers=={ver['transformers_version']} | SenseNovaLoopForConditionalGeneration registered=True | "
+            f"hf_overrides loop_settings plans={ver['plan_lens']}",
+            flush=True,
+        )
+        return
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    vpy = ensure_vllm_venv()
+    vpy = ensure_vllm_venv(reuse_existing=False)
     qwen_res = test_stock_vllm_qwen35(vpy)
     stock_res = test_stock_vllm_loop(vpy)
     pr_res: Dict[str, Any] = {}

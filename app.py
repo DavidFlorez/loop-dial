@@ -74,6 +74,31 @@ FILTER_CHOICES: List[str] = [
     "Hit token cap or repetition loop",
 ]
 
+BENCHMARK_SPECS: Dict[str, Dict[str, str]] = {
+    "math500": {
+        "label": "MATH-500 (200 problems · 16k token cap)",
+        "subset_file": "subset_200.json",
+        "results_subdir": "",
+    },
+    "aime": {
+        "label": "AIME 2024+2025 (60 olympiad problems · 32k token cap)",
+        "subset_file": "aime_2024_2025.json",
+        "results_subdir": "aime",
+    },
+}
+BENCHMARK_LABEL_TO_KEY: Dict[str, str] = {v["label"]: k for k, v in BENCHMARK_SPECS.items()}
+
+
+def normalize_benchmark_key(val: Any) -> str:
+    s = str(val or "").strip()
+    if s in BENCHMARK_SPECS:
+        return s
+    if s in BENCHMARK_LABEL_TO_KEY:
+        return BENCHMARK_LABEL_TO_KEY[s]
+    if "aime" in s.lower():
+        return "aime"
+    return "math500"
+
 APP_CSS = """
 @layer tokens, layout, cards, disclosure;
 
@@ -360,46 +385,67 @@ def clamp_passes(value: Any, default: int = 2) -> int:
 
 
 class ReplayStore:
-    """Loads subset problems and all saved condition JSONLs from `results/` (falling back to smoke runs if needed)."""
+    """Loads MATH-500 and AIME 2024+2025 subsets and saved condition JSONLs from `results/`."""
 
     def __init__(self, data_dir: Path = DATA_DIR, results_dir: Path = RESULTS_DIR) -> None:
         self.data_dir = data_dir
         self.results_dir = results_dir
+        self.datasets: Dict[str, Dict[str, Any]] = {}
         self.problems: List[Dict[str, Any]] = []
         self.problem_by_id: Dict[str, Dict[str, Any]] = {}
         self.records: Dict[str, Dict[str, Dict[str, Any]]] = {k: {} for k in CONDITION_META}
         self.reload()
 
-    def reload(self) -> None:
-        subset_path = self.data_dir / "subset_200.json"
+    def _load_one_benchmark(self, b_key: str) -> Dict[str, Any]:
+        spec = BENCHMARK_SPECS[b_key]
+        subset_path = self.data_dir / spec["subset_file"]
         if subset_path.exists():
             payload = json.loads(subset_path.read_text(encoding="utf-8"))
-            self.problems = payload.get("problems", [])
+            problems = payload.get("problems", [])
         else:
-            self.problems = []
-        self.problem_by_id = {p["unique_id"]: p for p in self.problems}
+            problems = []
+        problem_by_id = {p["unique_id"]: p for p in problems}
+        records: Dict[str, Dict[str, Dict[str, Any]]] = {k: {} for k in CONDITION_META}
 
-        self.records = {k: {} for k in CONDITION_META}
-        # First load smoke_5problems.jsonl as a baseline fallback if main JSONLs aren't complete yet
-        smoke_jsonl = self.results_dir / "smoke_5problems.jsonl"
-        if smoke_jsonl.exists():
-            for line in smoke_jsonl.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                row = json.loads(line)
-                cond = row.get("condition")
-                uid = row.get("unique_id")
-                if cond in self.records and isinstance(uid, str):
-                    self.records[cond][uid] = self._normalize_row(row, source="smoke_4k")
+        res_base = self.results_dir / spec["results_subdir"] if spec["results_subdir"] else self.results_dir
 
-        # Override with full main-sweep JSONLs (`results/<cond>.jsonl`)
-        for cond in CONDITION_META:
-            cond_file = self.results_dir / f"{cond}.jsonl"
-            if cond_file.exists():
-                by_id = read_jsonl_by_id(cond_file)
-                for uid, row in by_id.items():
-                    self.records[cond][uid] = self._normalize_row(row, source=str(row.get("backend", "sweep")))
+        if b_key == "math500":
+            smoke_jsonl = self.results_dir / "smoke_5problems.jsonl"
+            if smoke_jsonl.exists():
+                for line in smoke_jsonl.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    row = json.loads(line)
+                    cond = row.get("condition")
+                    uid = row.get("unique_id")
+                    if cond in records and isinstance(uid, str):
+                        records[cond][uid] = self._normalize_row(row, source="smoke_4k")
+
+        if res_base.exists():
+            for cond in CONDITION_META:
+                cond_file = res_base / f"{cond}.jsonl"
+                if cond_file.exists():
+                    by_id = read_jsonl_by_id(cond_file)
+                    for uid, row in by_id.items():
+                        records[cond][uid] = self._normalize_row(row, source=str(row.get("backend", "sweep")))
+
+        return {
+            "problems": problems,
+            "problem_by_id": problem_by_id,
+            "records": records,
+        }
+
+    def reload(self) -> None:
+        self.datasets = {k: self._load_one_benchmark(k) for k in BENCHMARK_SPECS}
+        m500 = self.datasets["math500"]
+        self.problems = m500["problems"]
+        self.problem_by_id = m500["problem_by_id"]
+        self.records = m500["records"]
+
+    def get_dataset(self, benchmark: Any = "math500") -> Dict[str, Any]:
+        b_key = normalize_benchmark_key(benchmark)
+        return self.datasets.get(b_key, self.datasets["math500"])
 
     @staticmethod
     def _normalize_row(row: Dict[str, Any], source: str) -> Dict[str, Any]:
@@ -430,6 +476,7 @@ class ReplayStore:
             "condition": str(row.get("condition", "")),
             "unique_id": str(row.get("unique_id", "")),
             "correct": correct,
+            "correct_strict": bool(row.get("correct_strict", correct)),
             "pred": pred,
             "used_forced_answer": used_forced,
             "n_tokens": int(row.get("n_tokens", 0)),
@@ -441,24 +488,30 @@ class ReplayStore:
             "source": source,
         }
 
-    def available_problem_ids(self) -> List[str]:
+    def available_problem_ids(self, benchmark: Any = "math500") -> List[str]:
+        ds = self.get_dataset(benchmark)
+        probs = ds["problems"]
+        recs = ds["records"]
         logged_ids = set()
-        for cond_map in self.records.values():
+        for cond_map in recs.values():
             logged_ids.update(cond_map.keys())
-        ordered = [p["unique_id"] for p in self.problems if p["unique_id"] in logged_ids]
+        ordered = [p["unique_id"] for p in probs if p["unique_id"] in logged_ids]
         if ordered:
             return ordered
-        return [p["unique_id"] for p in self.problems[:20]]
+        return [p["unique_id"] for p in probs[:20]]
 
-    def filter_problem_choices(self, filter_mode: str) -> List[Tuple[str, str]]:
-        avail = self.available_problem_ids()
+    def filter_problem_choices(self, filter_mode: str, benchmark: Any = "math500") -> List[Tuple[str, str]]:
+        ds = self.get_dataset(benchmark)
+        prob_by_id = ds["problem_by_id"]
+        recs = ds["records"]
+        avail = self.available_problem_ids(benchmark)
         filtered: List[str] = []
         for uid in avail:
-            r1 = self.records["loop_n1"].get(uid)
-            r2 = self.records["loop_n2"].get(uid)
-            r3 = self.records["loop_n3"].get(uid)
-            r4 = self.records["loop_n4"].get(uid)
-            rq = self.records["qwen35_9b"].get(uid)
+            r1 = recs["loop_n1"].get(uid)
+            r2 = recs["loop_n2"].get(uid)
+            r3 = recs["loop_n3"].get(uid)
+            r4 = recs["loop_n4"].get(uid)
+            rq = recs["qwen35_9b"].get(uid)
 
             if filter_mode == "Loop passes disagree (1–4)":
                 verdicts = {r["correct"] for r in (r1, r2, r3, r4) if r is not None}
@@ -484,40 +537,51 @@ class ReplayStore:
 
         choices: List[Tuple[str, str]] = []
         for uid in filtered:
-            prob = self.problem_by_id.get(uid)
+            prob = prob_by_id.get(uid)
             if not prob:
                 continue
             plain_preview = format_math_prose_plain(prob["problem"]).replace("\n", " ")
             if len(plain_preview) > 74:
                 plain_preview = plain_preview[:71].rstrip() + "..."
-            label = f"#{int(prob['idx']) + 1:03d} · Level {prob['level']} {prob['subject']} · {plain_preview}"
+            idx_num = int(prob.get("idx", 0)) + 1
+            if prob.get("year") is not None:
+                item_id = str(uid).split("/")[-1]
+                label = f"#{idx_num:02d} · AIME {prob['year']} (#{item_id}) · {plain_preview}"
+            else:
+                label = f"#{idx_num:03d} · Level {prob.get('level')} {prob.get('subject')} · {plain_preview}"
             choices.append((label, uid))
         return choices
 
-    def render_scoreboard_html(self) -> str:
+    def render_scoreboard_html(self, benchmark: Any = "math500") -> str:
+        b_key = normalize_benchmark_key(benchmark)
+        ds = self.get_dataset(b_key)
+        recs = ds["records"]
+        bench_title = BENCHMARK_SPECS[b_key]["label"]
         chips: List[str] = []
         for cond, meta in CONDITION_META.items():
-            rows = list(self.records[cond].values())
+            rows = list(recs[cond].values())
             if not rows:
                 continue
             n_tot = len(rows)
+            n_strict = sum(1 for r in rows if r["correct_strict"])
             n_ok = sum(1 for r in rows if r["correct"])
-            pct = (100.0 * n_ok / n_tot) if n_tot else 0.0
+            pct_s = (100.0 * n_strict / n_tot) if n_tot else 0.0
             med_toks = int(round(statistics.median(r["n_tokens"] for r in rows)))
+            forced_suffix = f" ({n_ok}/{n_tot} w/ cap prompt)" if n_ok != n_strict else ""
             chips.append(
                 f'<div class="ld-score-chip">'
                 f'<strong>{_esc(meta["title"])}</strong>: '
-                f'{n_ok}/{n_tot} solved ({pct:.1f}%) · median {med_toks:,} tokens'
+                f"{n_strict}/{n_tot} solved ({pct_s:.1f}%){_esc(forced_suffix)} · median {med_toks:,} tokens"
                 f"</div>"
             )
         chips_html = "".join(chips) if chips else (
-            '<div class="ld-score-chip">No saved runs found in results/ yet. Run smoke_test.py or run_sweep.py.</div>'
+            '<div class="ld-score-chip">No saved runs found for this benchmark yet. Run scripts/run_sweep.py first.</div>'
         )
         return (
             '<section class="ld-banner" aria-label="Experiment summary">'
-            "<div><strong>Turn the Loop Dial:</strong> SenseNova-Loop-9B runs its middle 24 layers twice per token by "
-            "default (56 layer steps). Slide the dial from 1 to 4 passes—or compare against plain Qwen3.5-9B "
-            "(32 layer steps once)—on the exact same math problems.</div>"
+            f"<div><strong>Turn the Loop Dial ({_esc(bench_title)}):</strong> SenseNova-Loop-9B runs its middle 24 "
+            "layers twice per token by default (56 layer steps). Slide the dial from 1 to 4 passes—or compare against "
+            "plain Qwen3.5-9B (32 layer steps once)—on the exact same math problems.</div>"
             f'<div class="ld-score-strip">{chips_html}</div>'
             "</section>"
         )
@@ -529,18 +593,27 @@ def render_problem_html(prob: Optional[Dict[str, Any]]) -> str:
     clean_problem = format_math_prose_plain(prob.get("problem", ""))
     clean_gold = latex_to_plain_text(prob.get("answer", ""))
     subject = prob.get("subject", "Math")
-    level = prob.get("level", "?")
+    level = prob.get("level")
+    year = prob.get("year")
     idx_num = int(prob.get("idx", 0)) + 1
     uid = str(prob.get("unique_id", ""))
     item_num = uid.split("/")[-1].replace(".json", "") if uid else "?"
+    if year is not None:
+        meta_html = (
+            f"<span><strong>Problem #{idx_num:02d}</strong> (AIME {_esc(year)} item {_esc(item_num)})</span>"
+            f"<span>· Competition: <strong>AIME {_esc(year)} Olympiad</strong></span>"
+            f"<span>· Verified Reference Answer: <strong>{_esc(clean_gold)}</strong></span>"
+        )
+    else:
+        meta_html = (
+            f"<span><strong>Problem #{idx_num:03d}</strong> (MATH-500 item {_esc(item_num)})</span>"
+            f"<span>· Subject: <strong>{_esc(subject)}</strong></span>"
+            f"<span>· Difficulty: <strong>Level {_esc(level if level is not None else '?')} of 5</strong></span>"
+            f"<span>· Verified Reference Answer: <strong>{_esc(clean_gold)}</strong></span>"
+        )
     return (
         '<article class="ld-problem-card">'
-        '<div class="ld-problem-meta">'
-        f"<span><strong>Problem #{idx_num:03d}</strong> (MATH-500 item {_esc(item_num)})</span>"
-        f"<span>· Subject: <strong>{_esc(subject)}</strong></span>"
-        f"<span>· Difficulty: <strong>Level {_esc(level)} of 5</strong></span>"
-        f"<span>· Verified Reference Answer: <strong>{_esc(clean_gold)}</strong></span>"
-        "</div>"
+        f'<div class="ld-problem-meta">{meta_html}</div>'
         f'<div class="ld-problem-text">{_esc(clean_problem)}</div>'
         "</article>"
     )
@@ -629,6 +702,7 @@ def resolve_pair_views(
     left_passes: int,
     compare_qwen: bool,
     right_passes: int,
+    benchmark: Any = "math500",
 ) -> Tuple[str, str, str]:
     """Pure helper returning `(problem_html, left_card_html, right_card_html)` for unit tests and Gradio."""
     left_n = clamp_passes(left_passes, default=2)
@@ -636,24 +710,33 @@ def resolve_pair_views(
     left_cond = f"loop_n{left_n}"
     right_cond = "qwen35_9b" if bool(compare_qwen) else f"loop_n{right_n}"
 
-    prob = store.problem_by_id.get(str(problem_id))
-    if prob is None and store.problems:
-        prob = store.problems[0]
+    ds = store.get_dataset(benchmark)
+    prob = ds["problem_by_id"].get(str(problem_id))
+    if prob is None and ds["problems"]:
+        prob = ds["problems"][0]
         problem_id = prob["unique_id"]
 
     prob_html = render_problem_html(prob)
-    left_html = render_condition_card_html(left_cond, store.records[left_cond].get(problem_id))
-    right_html = render_condition_card_html(right_cond, store.records[right_cond].get(problem_id))
+    left_html = render_condition_card_html(left_cond, ds["records"][left_cond].get(problem_id))
+    right_html = render_condition_card_html(right_cond, ds["records"][right_cond].get(problem_id))
     return prob_html, left_html, right_html
 
 
 def build_app(store: Optional[ReplayStore] = None, *, enable_live_gpu: bool = False) -> gr.Blocks:
     store = store or ReplayStore()
-    initial_choices = store.filter_problem_choices(FILTER_CHOICES[0])
+    bench_labels = [BENCHMARK_SPECS["math500"]["label"], BENCHMARK_SPECS["aime"]["label"]]
+    default_bench_label = bench_labels[0]
+    initial_choices = store.filter_problem_choices(FILTER_CHOICES[0], benchmark=default_bench_label)
     initial_uid = initial_choices[0][1] if initial_choices else ""
 
     with gr.Blocks(title="Loop Dial — SenseNova-Loop-9B vs Qwen3.5-9B") as demo:
-        banner_html = gr.HTML(value=store.render_scoreboard_html())
+        banner_html = gr.HTML(value=store.render_scoreboard_html(default_bench_label))
+
+        benchmark_radio = gr.Radio(
+            choices=bench_labels,
+            value=default_bench_label,
+            label="Benchmark dataset",
+        )
 
         with gr.Row():
             filter_radio = gr.Radio(
@@ -698,6 +781,7 @@ def build_app(store: Optional[ReplayStore] = None, *, enable_live_gpu: bool = Fa
             left_passes=2,
             compare_qwen=True,
             right_passes=1,
+            benchmark=default_bench_label,
         )
         problem_view = gr.HTML(value=prob_card)
 
@@ -705,43 +789,63 @@ def build_app(store: Optional[ReplayStore] = None, *, enable_live_gpu: bool = Fa
             left_view = gr.HTML(value=init_left)
             right_view = gr.HTML(value=init_right)
 
-        def _on_filter_change(mode: str) -> Tuple[Any, str, str, str]:
-            choices = store.filter_problem_choices(mode)
+        def _on_benchmark_or_filter_change(
+            bench_lbl: str,
+            mode: str,
+            l_passes: int,
+            use_qwen: bool,
+            r_passes: int,
+        ) -> Tuple[str, Any, str, str, str]:
+            store.reload()
+            choices = store.filter_problem_choices(mode, benchmark=bench_lbl)
             uid = choices[0][1] if choices else ""
-            p_html, l_html, r_html = resolve_pair_views(store, uid, 2, True, 1)
-            return gr.update(choices=choices, value=uid), p_html, l_html, r_html
+            p_html, l_html, r_html = resolve_pair_views(
+                store, uid, l_passes, use_qwen, r_passes, benchmark=bench_lbl
+            )
+            return (
+                store.render_scoreboard_html(bench_lbl),
+                gr.update(choices=choices, value=uid),
+                p_html,
+                l_html,
+                r_html,
+            )
 
         def _on_qwen_toggle(
+            bench_lbl: str,
             use_qwen: bool,
             uid: str,
             l_passes: int,
             r_passes: int,
         ) -> Tuple[Any, str, str, str]:
-            p_html, l_html, r_html = resolve_pair_views(store, uid, l_passes, use_qwen, r_passes)
+            p_html, l_html, r_html = resolve_pair_views(
+                store, uid, l_passes, use_qwen, r_passes, benchmark=bench_lbl
+            )
             return gr.update(visible=not bool(use_qwen)), p_html, l_html, r_html
 
         def _on_selection_change(
+            bench_lbl: str,
             uid: str,
             l_passes: int,
             use_qwen: bool,
             r_passes: int,
         ) -> Tuple[str, str, str]:
-            return resolve_pair_views(store, uid, l_passes, use_qwen, r_passes)
+            return resolve_pair_views(store, uid, l_passes, use_qwen, r_passes, benchmark=bench_lbl)
 
-        filter_radio.change(
-            fn=_on_filter_change,
-            inputs=[filter_radio],
-            outputs=[problem_dropdown, problem_view, left_view, right_view],
-        )
+        for top_ctrl in (benchmark_radio, filter_radio):
+            top_ctrl.change(
+                fn=_on_benchmark_or_filter_change,
+                inputs=[benchmark_radio, filter_radio, left_slider, qwen_toggle, right_slider],
+                outputs=[banner_html, problem_dropdown, problem_view, left_view, right_view],
+            )
         qwen_toggle.change(
             fn=_on_qwen_toggle,
-            inputs=[qwen_toggle, problem_dropdown, left_slider, right_slider],
+            inputs=[benchmark_radio, qwen_toggle, problem_dropdown, left_slider, right_slider],
             outputs=[right_slider, problem_view, left_view, right_view],
         )
         for ctrl in (problem_dropdown, left_slider, right_slider):
             ctrl.change(
                 fn=_on_selection_change,
-                inputs=[problem_dropdown, left_slider, qwen_toggle, right_slider],
+                inputs=[benchmark_radio, problem_dropdown, left_slider, qwen_toggle, right_slider],
                 outputs=[problem_view, left_view, right_view],
             )
 
