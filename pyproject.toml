@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loop-dial"
+version = "0.1.0"
+description = "Turning the middle-layer loop dial (n=1,2,3,4) on SenseNova-Loop-9B-Preview vs Qwen3.5-9B on MATH-500"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "datasets>=3.0.0",
+    "gradio>=5.0.0",
+    "math-verify>=0.7.0",
+    "matplotlib>=3.9.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "pillow>=10.0.0",
+    "scipy>=1.13.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "transformers==5.18.0",
+    "accelerate>=1.2.0",
+    "safetensors>=0.4.5",
+    "torch>=2.6.0",
+]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]

@@ -1,0 +1,25 @@
+{
+  "timestamp_utc": "2026-11-06T08:09:25.456886+00:00",
+  "backend": "vllm",
+  "n_problems": 50,
+  "max_new_tokens": 16384,
+  "forced_max_tokens": 512,
+  "sampling": {
+    "enable_thinking": true,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "seed": 0
+  },
+  "runs": [
+    {
+      "condition": "loop_n3",
+      "backend": "vllm",
+      "pass1_wall_s": 640.11,
+      "pass2_wall_s": 21.49,
+      "total_wall_s": 661.6
+    }
+  ]
+}

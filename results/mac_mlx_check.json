@@ -1,0 +1,21 @@
+{
+  "timestamp_utc": "2026-11-06T04:39:02.863456+00:00",
+  "mac_chip": "Apple M3",
+  "mac_ram_gb": 16.0,
+  "macos_version": "26.7.1",
+  "mlx_version": "0.32.4",
+  "mlx_lm_version": "0.32.2",
+  "model_id": "hermitdave/SenseNova-Loop-9B-Preview-MLX-slq-4.5bpw",
+  "loaded_successfully": true,
+  "load_and_download_s": 810.23,
+  "loaded_model_class": "custom_model.Model",
+  "physical_layers_len": 32,
+  "has_loop_plan_attribute": false,
+  "architecture_finding": "slq_model.py subclasses mlx_lm.models.qwen3_5.Model (32 layers, 1 pass, no middle-layer loop) and strips all .mhc_attn. and .mhc_ffn. tensors inside load_weights().",
+  "active_metal_mem_gb": 7.625,
+  "peak_metal_mem_gb": 7.858,
+  "generated_tokens": 128,
+  "elapsed_s": 10.371,
+  "tok_per_s": 12.34,
+  "output_sample_128tok": "<think>\nWe need to find all positive integers $n$ such that $n^2 + 48 + 19n = 4x^2 for some integer x.\n\nLet me set up the equation:\n$n^2 + 19n + 48 = k^2\n\nLet me try to complete the square:\n$n^2 + 19n + 48 = (n+19/2)的平方 + 48 - 81/4 = (n+19/2)^2 + 11/4\n\nHmm, that's not"
+}

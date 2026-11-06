@@ -1,0 +1,25 @@
+{
+  "timestamp_utc": "2026-11-06T08:35:08.270355+00:00",
+  "backend": "vllm",
+  "n_problems": 50,
+  "max_new_tokens": 16384,
+  "forced_max_tokens": 512,
+  "sampling": {
+    "enable_thinking": true,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "seed": 0
+  },
+  "runs": [
+    {
+      "condition": "qwen35_9b",
+      "backend": "vllm",
+      "pass1_wall_s": 281.68,
+      "pass2_wall_s": 34.58,
+      "total_wall_s": 316.26
+    }
+  ]
+}

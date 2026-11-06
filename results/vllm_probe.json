@@ -1,0 +1,74 @@
+{
+  "timestamp_utc": "2026-11-06T06:04:36.072943+00:00",
+  "vllm_venv": "/content/vllm-venv/bin/python",
+  "stock_vllm_0_33_0_qwen35_9b": {
+    "tested": true,
+    "supported": true,
+    "n_tokens": 64,
+    "elapsed_s": 0.9176,
+    "ms_per_token": 14.338,
+    "tok_per_s": 69.75,
+    "preview_32": "Here's a thinking process that leads to the solution:\n\n1.  **Analyze the Problem:**\n    The goal is to find all positive integers $"
+  },
+  "stock_vllm_0_33_0_sensenova_loop": {
+    "tested": true,
+    "vllm_version": "0.33.0",
+    "torch_version": "2.14.0+cu130",
+    "transformers_version": "5.20.2",
+    "supported_out_of_box": false,
+    "error_type": "RuntimeError",
+    "error_message": "Engine core initialization failed. See root cause above. Failed core proc(s): {}"
+  },
+  "pr_64832_overlay": {
+    "pr_url": "https://github.com/vllm-project/vllm/pull/64832",
+    "dry_run_rc": 0,
+    "dry_run_stdout": "checking file vllm/model_executor/kernels/mhc/sensenova_loop.py\nchecking file vllm/model_executor/layers/sensenova_loop_mhc.py\nchecking file vllm/model_executor/models/config.py\nHunk #1 succeeded at 71 (offset 7 lines).\nHunk #2 succeeded at 1291 (offset -74 lines).\nchecking file vllm/model_executor/models/registry.py\nHunk #1 succeeded at 205 with fuzz 1 (offset 1 line).\nchecking file vllm/model_executor/models/sensenova_loop.py\nchecking file vllm/transformers_utils/config.py\nHunk #1 succeeded at 160 (offset -2 lines).\nchecking file vllm/transformers_utils/configs/__init__.py\nHunk #1 succeeded at 65 (offset -4 lines).\nHunk #2 succeeded at 137 (offset -6 lines).\nchecking file vllm/transformers_utils/configs/sensenova_loop.py\n",
+    "dry_run_stderr": "",
+    "applied": true,
+    "per_pass_verification": {
+      "1": {
+        "n_passes": 1,
+        "n_tokens": 64,
+        "elapsed_s": 0.9366,
+        "ms_per_token": 14.635,
+        "tok_per_s": 68.33,
+        "preview_32": "Let me find all positive integers $n$ such that $ n = 1, 2, 4, 11, 1244",
+        "preview_64": "Let me find all positive integers $n$ such that $ n = 1, 2, 4, 11, 124444444444444444444444444444444444",
+        "ok": true
+      },
+      "2": {
+        "n_passes": 2,
+        "n_tokens": 64,
+        "elapsed_s": 1.5758,
+        "ms_per_token": 24.622,
+        "tok_per_s": 40.61,
+        "preview_32": "We need to find all positive integers $n$ such that $n^2 + 19n + 48$ is a perfect square.\n\n",
+        "preview_64": "We need to find all positive integers $n$ such that $n^2 + 19n + 48$ is a perfect square.\n\nLet $n^2 + 19n + 48 = k^2$ for some non-negative integer $k$.\n\nSince $n$",
+        "ok": true
+      },
+      "3": {
+        "n_passes": 3,
+        "n_tokens": 64,
+        "elapsed_s": 2.2042,
+        "ms_per_token": 34.441,
+        "tok_per_s": 29.04,
+        "preview_32": "We need to find all positive integers $n$ such that $n^2 + 19n + 48$ is a perfect square.\n\n",
+        "preview_64": "We need to find all positive integers $n$ such that $n^2 + 19n + 48$ is a perfect square.\n\nLet me say $n^2 + 19n + 48 = k^2$ for some positive integer $k$.\n\nSince $n",
+        "ok": true
+      },
+      "4": {
+        "n_passes": 4,
+        "n_tokens": 64,
+        "elapsed_s": 2.7805,
+        "ms_per_token": 43.446,
+        "tok_per_s": 23.02,
+        "preview_32": "We need to find all positive integers $n$ such that $n^2 + 19n + 48$ is a perfect square.\n\n",
+        "preview_64": "We need to find all positive integers $n$ such that $n^2 + 19n + 48$ is a perfect square.\n\nLet me say $n^2 + 19n + 48 = k^2$ for some positive integer $k$.\n\nSince $n",
+        "ok": true
+      }
+    },
+    "all_four_passes_succeeded": true,
+    "distinct_64tok_trajectories": 3,
+    "honors_loop_settings_distinct_outputs": true
+  }
+}

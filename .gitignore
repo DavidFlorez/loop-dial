@@ -1,0 +1,43 @@
+# Python & virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Model weights & large binary checkpoints (NEVER commit)
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.onnx
+hf_cache/
+models/
+
+# Secrets, tokens & local configs
+.env
+.env.*
+*.pem
+*.key
+*oauth*.json
+*credentials*.json
+.colab_state*.json
+
+# OS & editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Scratch / temporary outputs
+tmp/
+scratch/
+notebooks/*_output.ipynb
